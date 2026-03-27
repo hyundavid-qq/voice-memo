@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>음성 메모</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f5f5f7;
+  color: #1d1d1f;
+  min-height: 100vh;
+  padding-bottom: 100px;
+}
+.header {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(245,245,247,0.92);
+  backdrop-filter: blur(12px);
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid #e0e0e0;
+}
+.header h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+.search-box {
+  display: flex; gap: 8px; align-items: center;
+}
+.search-box input {
+  flex: 1; padding: 10px 14px; border-radius: 12px;
+  border: 1px solid #d1d1d6; background: #fff;
+  font-size: 15px; outline: none;
+}
+.search-box input:focus { border-color: #007aff; }
+.filter-bar {
+  display: flex; gap: 6px; padding: 10px 16px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.filter-bar::-webkit-scrollbar { display: none; }
+.filter-chip {
+  flex-shrink: 0; padding: 6px 14px; border-radius: 20px;
+  background: #e8e8ed; font-size: 13px; cursor: pointer;
+  border: none; color: #1d1d1f; white-space: nowrap;
+}
+.filter-chip.active { background: #007aff; color: #fff; }
+.cards { padding: 8px 16px; }
+.card {
+  background: #fff; border-radius: 16px;
+  padding: 16px; margin-bottom: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  cursor: pointer; transition: box-shadow 0.2s;
+}
+.card:active { box-shadow: 0 1px 6px rgba(0,0,0,0.15); }
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+.card-category {
+  font-size: 11px; font-weight: 600; padding: 3px 10px;
+  border-radius: 10px; color: #fff;
+}
+.cat-idea { background: #ff9500; }
+.cat-todo { background: #ff3b30; }
+.cat-work { background: #007aff; }
+.cat-appt { background: #34c759; }
+.cat-personal { background: #af52de; }
+.card-date { font-size: 12px; color: #8e8e93; }
+.card-summary { font-size: 15px; font-weight: 500; margin-bottom: 6px; line-height: 1.4; }
+.card-body {
+  display: none; font-size: 14px; color: #3a3a3c;
+  line-height: 1.6; margin-bottom: 8px;
+  padding-top: 8px; border-top: 1px solid #f0f0f0;
+  white-space: pre-wrap; word-break: break-word;
+}
+.card.expanded .card-body { display: block; }
+.card-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag {
+  font-size: 12px; color: #007aff; background: #e8f0fe;
+  padding: 3px 10px; border-radius: 10px; cursor: pointer;
+  border: none;
+}
+.card-actions {
+  display: none; margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid #f0f0f0; text-align: right;
+}
+.card.expanded .card-actions { display: block; }
+.btn-delete {
+  background: none; border: none; color: #ff3b30;
+  font-size: 13px; cursor: pointer; padding: 6px 12px;
+}
+.rec-area {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: rgba(245,245,247,0.95);
+  backdrop-filter: blur(12px);
+  padding: 12px 16px 28px;
+  border-top: 1px solid #e0e0e0;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  z-index: 100;
+}
+.rec-status {
+  font-size: 13px; color: #8e8e93; min-height: 18px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rec-btn {
+  width: 64px; height: 64px; border-radius: 50%;
+  background: #007aff; border: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.15s, background 0.2s;
+  box-shadow: 0 4px 12px rgba(0,122,255,0.35);
+}
+.rec-btn:active { transform: scale(0.92); }
+.rec-btn.recording {
+  background: #ff3b30;
+  box-shadow: 0 4px 12px rgba(255,59,48,0.4);
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 4px 12px rgba(255,59,48,0.4); }
+  50% { box-shadow: 0 4px 24px rgba(255,59,48,0.6); }
+}
+.rec-btn svg { width: 28px; height: 28px; fill: #fff; }
+.empty {
+  text-align: center; padding: 60px 20px;
+  color: #8e8e93; font-size: 15px; line-height: 1.6;
+}
+.highlight { background: #fff3aa; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>음성 메모</h1>
+  <div class="search-box">
+    <input type="text" id="searchInput" placeholder="메모 검색...">
+  </div>
+</div>
+<div class="filter-bar" id="filterBar"></div>
+<div class="cards" id="cardList"></div>
+
+<div class="rec-area">
+  <div class="rec-status" id="recStatus"></div>
+  <button class="rec-btn" id="recBtn" aria-label="녹음">
+    <svg id="micIcon" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+    <svg id="stopIcon" viewBox="0 0 24 24" style="display:none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+  </button>
+</div>
+
+<script>
+const STORAGE_KEY = 'voice_memos';
+const CATEGORIES = [
+  { id: 'idea', label: '아이디어', cls: 'cat-idea', keywords: ['아이디어','생각','떠올','영감','제안','구상','발상','컨셉','기획안','브레인스토밍'] },
+  { id: 'todo', label: '할일', cls: 'cat-todo', keywords: ['할일','해야','하기','해놓','처리','완료','마감','체크','목록','리스트','사야','사오','장보'] },
+  { id: 'work', label: '업무', cls: 'cat-work', keywords: ['업무','회의','보고','프로젝트','미팅','출장','발표','기획','개발','배포','서버','코드','리뷰','클라이언트','메일','이메일'] },
+  { id: 'appt', label: '약속', cls: 'cat-appt', keywords: ['약속','만남','만나','예약','병원','치과','모임','식사','저녁','점심','시에','월요일','화요일','수요일','목요일','금요일','토요일','일요일'] },
+  { id: 'personal', label: '개인/가족', cls: 'cat-personal', keywords: ['가족','엄마','아빠','아들','딸','아내','남편','부모','집','이사','생일','기념일','여행','휴가','건강','운동','취미','쇼핑'] },
+];
+
+let memos = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+let activeFilter = null;
+let activeTagFilter = null;
+let searchQuery = '';
+let recognition = null;
+let isRecording = false;
+let transcript = '';
+
+function initRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { alert('이 브라우저는 음성 인식을 지원하지 않습니다.\nChrome 또는 Edge를 사용해주세요.'); return null; }
+  const r = new SR();
+  r.lang = 'ko-KR';
+  r.continuous = true;
+  r.interimResults = true;
+  r.maxAlternatives = 1;
+  let finalTranscript = '';
+  r.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    transcript = finalTranscript;
+    document.getElementById('recStatus').textContent = (finalTranscript + interim).slice(-60) || '듣고 있습니다...';
+  };
+  r.onerror = (e) => {
+    if (e.error === 'no-speech') return;
+    console.error('Speech error', e.error);
+    stopRecording();
+  };
+  r.onend = () => { if (isRecording) r.start(); };
+  r._resetFinal = () => { finalTranscript = ''; };
+  return r;
+}
+
+function startRecording() {
+  if (!recognition) recognition = initRecognition();
+  if (!recognition) return;
+  transcript = '';
+  recognition._resetFinal();
+  isRecording = true;
+  recognition.start();
+  document.getElementById('recBtn').classList.add('recording');
+  document.getElementById('micIcon').style.display = 'none';
+  document.getElementById('stopIcon').style.display = '';
+  document.getElementById('recStatus').textContent = '듣고 있습니다...';
+}
+
+function stopRecording() {
+  isRecording = false;
+  if (recognition) recognition.stop();
+  document.getElementById('recBtn').classList.remove('recording');
+  document.getElementById('micIcon').style.display = '';
+  document.getElementById('stopIcon').style.display = 'none';
+  document.getElementById('recStatus').textContent = '';
+  if (transcript.trim()) saveMemo(transcript.trim());
+}
+
+document.getElementById('recBtn').addEventListener('click', () => {
+  isRecording ? stopRecording() : startRecording();
+});
+
+function classify(text) {
+  const t = text.toLowerCase();
+  let best = null, bestScore = 0;
+  for (const cat of CATEGORIES) {
+    let score = 0;
+    for (const kw of cat.keywords) { if (t.includes(kw)) score++; }
+    if (score > bestScore) { bestScore = score; best = cat; }
+  }
+  return best || CATEGORIES[0];
+}
+
+function extractTags(text) {
+  const stopwords = new Set(['그리고','그래서','하지만','그런데','이것','저것','그것','있는','없는','하는','되는','것이','수가','들이','에서','으로','까지','부터','에게','한테','라고','이라고','라는','라면','니까','는데','거든','잖아','해서','하고','이고','인데','하면','되면','같은','다른','모든','어떤','이런','저런','그런','합니다','됩니다','있습니다','없습니다','했습니다','입니다','습니다','니다','해야','하고','에서','으로','에게','지금','오늘','내일','어제','매우','정말','진짜','아주','좀','잘','안','못','더','또','그','이','저','그냥','그래','네','예','아니','뭐','왜','어디','언제','누가','어떻게','를','을','는','은','가','이','의','에','도','만','와','과','한','된','할','들','좋','것','수','중','후','전']);
+  const words = text.replace(/[.,!?;:()]/g, ' ').split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
+  const freq = {};
+  words.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([w]) => w);
+}
+
+function getSummary(text) {
+  const sentences = text.split(/[.!?\n]+/).map(s => s.trim()).filter(Boolean);
+  const s = sentences[0] || text;
+  return s.length > 60 ? s.slice(0, 57) + '...' : s;
+}
+
+function saveMemo(text) {
+  const now = new Date();
+  const cat = classify(text);
+  const memo = {
+    id: Date.now(),
+    text,
+    summary: getSummary(text),
+    category: cat.id,
+    categoryLabel: cat.label,
+    tags: extractTags(text),
+    date: now.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' }),
+    time: now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }),
+    timestamp: now.getTime()
+  };
+  memos.unshift(memo);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(memos));
+  render();
+}
+
+function deleteMemo(id) {
+  memos = memos.filter(m => m.id !== id);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(memos));
+  render();
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function highlightText(text, query) {
+  if (!query) return escapeHtml(text);
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return escapeHtml(text).replace(new RegExp(`(${escaped})`, 'gi'), '<span class="highlight">$1</span>');
+}
+
+function render() {
+  const list = document.getElementById('cardList');
+  const q = searchQuery.toLowerCase();
+  let filtered = memos;
+  if (activeFilter) filtered = filtered.filter(m => m.category === activeFilter);
+  if (activeTagFilter) filtered = filtered.filter(m => m.tags.includes(activeTagFilter));
+  if (q) filtered = filtered.filter(m => m.text.toLowerCase().includes(q) || m.summary.toLowerCase().includes(q) || m.tags.some(t => t.includes(q)));
+
+  renderFilters();
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="empty">${memos.length === 0 ? '녹음 버튼을 눌러<br>첫 번째 메모를 만들어보세요' : '검색 결과가 없습니다'}</div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(m => {
+    const cat = CATEGORIES.find(c => c.id === m.category) || CATEGORIES[0];
+    return `<div class="card" data-id="${m.id}" onclick="toggleCard(this)">
+      <div class="card-header">
+        <span class="card-category ${cat.cls}">${escapeHtml(m.categoryLabel)}</span>
+        <span class="card-date">${escapeHtml(m.date)} ${escapeHtml(m.time)}</span>
+      </div>
+      <div class="card-summary">${highlightText(m.summary, searchQuery)}</div>
+      <div class="card-body">${highlightText(m.text, searchQuery)}</div>
+      <div class="card-tags">${m.tags.map(t => `<button class="tag" onclick="event.stopPropagation();filterByTag('${escapeHtml(t)}')">#${escapeHtml(t)}</button>`).join('')}</div>
+      <div class="card-actions"><button class="btn-delete" onclick="event.stopPropagation();if(confirm('삭제하시겠습니까?'))deleteMemo(${m.id})">삭제</button></div>
+    </div>`;
+  }).join('');
+}
+
+function toggleCard(el) { el.classList.toggle('expanded'); }
+
+function renderFilters() {
+  const bar = document.getElementById('filterBar');
+  let html = `<button class="filter-chip ${!activeFilter && !activeTagFilter ? 'active' : ''}" onclick="clearFilters()">전체</button>`;
+  CATEGORIES.forEach(c => {
+    if (memos.some(m => m.category === c.id))
+      html += `<button class="filter-chip ${activeFilter === c.id ? 'active' : ''}" onclick="filterByCat('${c.id}')">${c.label}</button>`;
+  });
+  if (activeTagFilter) {
+    html += `<button class="filter-chip active" onclick="clearFilters()">#${escapeHtml(activeTagFilter)} &times;</button>`;
+  }
+  bar.innerHTML = html;
+}
+
+function filterByCat(id) {
+  activeFilter = activeFilter === id ? null : id;
+  activeTagFilter = null;
+  render();
+}
+
+function filterByTag(tag) {
+  activeTagFilter = activeTagFilter === tag ? null : tag;
+  activeFilter = null;
+  render();
+}
+
+function clearFilters() {
+  activeFilter = null;
+  activeTagFilter = null;
+  render();
+}
+
+document.getElementById('searchInput').addEventListener('input', (e) => {
+  searchQuery = e.target.value.trim();
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
