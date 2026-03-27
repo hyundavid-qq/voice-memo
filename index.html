@@ -167,23 +167,31 @@ function initRecognition() {
   r.continuous = true;
   r.interimResults = true;
   r.maxAlternatives = 1;
-  let finalTranscript = '';
+  let segments = [];
+  let currentSessionFinal = '';
   r.onresult = (e) => {
+    currentSessionFinal = '';
     let interim = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript;
+    for (let i = 0; i < e.results.length; i++) {
+      if (e.results[i].isFinal) currentSessionFinal += e.results[i][0].transcript;
       else interim += e.results[i][0].transcript;
     }
-    transcript = finalTranscript;
-    document.getElementById('recStatus').textContent = (finalTranscript + interim).slice(-60) || '듣고 있습니다...';
+    transcript = segments.join('') + currentSessionFinal;
+    document.getElementById('recStatus').textContent = (transcript + interim).slice(-60) || '듣고 있습니다...';
   };
   r.onerror = (e) => {
     if (e.error === 'no-speech') return;
     console.error('Speech error', e.error);
     stopRecording();
   };
-  r.onend = () => { if (isRecording) r.start(); };
-  r._resetFinal = () => { finalTranscript = ''; };
+  r.onend = () => {
+    if (isRecording) {
+      if (currentSessionFinal) segments.push(currentSessionFinal);
+      currentSessionFinal = '';
+      try { r.start(); } catch(e) { console.error('Restart failed', e); }
+    }
+  };
+  r._reset = () => { segments = []; currentSessionFinal = ''; };
   return r;
 }
 
@@ -191,7 +199,7 @@ function startRecording() {
   if (!recognition) recognition = initRecognition();
   if (!recognition) return;
   transcript = '';
-  recognition._resetFinal();
+  recognition._reset();
   isRecording = true;
   recognition.start();
   document.getElementById('recBtn').classList.add('recording');
@@ -226,23 +234,77 @@ function classify(text) {
 }
 
 function extractTags(text) {
-  const stopwords = new Set(['그리고','그래서','하지만','그런데','이것','저것','그것','있는','없는','하는','되는','것이','수가','들이','에서','으로','까지','부터','에게','한테','라고','이라고','라는','라면','니까','는데','거든','잖아','해서','하고','이고','인데','하면','되면','같은','다른','모든','어떤','이런','저런','그런','합니다','됩니다','있습니다','없습니다','했습니다','입니다','습니다','니다','해야','하고','에서','으로','에게','지금','오늘','내일','어제','매우','정말','진짜','아주','좀','잘','안','못','더','또','그','이','저','그냥','그래','네','예','아니','뭐','왜','어디','언제','누가','어떻게','를','을','는','은','가','이','의','에','도','만','와','과','한','된','할','들','좋','것','수','중','후','전']);
-  const words = text.replace(/[.,!?;:()]/g, ' ').split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
-  const freq = {};
-  words.forEach(w => { freq[w] = (freq[w] || 0) + 1; });
-  return Object.entries(freq)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([w]) => w);
+  const tags = [];
+  const t = text.toLowerCase();
+  const tagRules = [
+    { tag: '가족', keywords: ['가족','엄마','아빠','아들','딸','아내','남편','부모','할머니','할아버지','동생','형','누나','오빠','언니','조카','시어머니','시아버지','장모','장인','며느리','사위'] },
+    { tag: '업무', keywords: ['업무','회의','보고','미팅','출장','발표','기획','개발','배포','서버','코드','리뷰','메일','프로젝트','보고서','일정','클라이언트','납품','계약'] },
+    { tag: '할일', keywords: ['해야','하기','할일','처리','완료','마감','사야','장보','체크','목록','잊지','까먹','챙기','준비','예약','신청'] },
+    { tag: '아이디어', keywords: ['아이디어','생각','떠올','영감','제안','구상','기획안','컨셉','브레인스토밍','발상','시도','실험'] },
+    { tag: '산업', keywords: ['산업','시장','투자','주식','경제','금융','부동산','스타트업','벤처','기술','플랫폼','트렌드','성장','매출','수익','비즈니스'] },
+  ];
+  for (const rule of tagRules) {
+    if (rule.keywords.some(kw => t.includes(kw))) tags.push(rule.tag);
+  }
+  const knownCompanies = ['삼성','LG','현대','SK','네이버','카카오','쿠팡','토스','배민','배달의민족','라인','당근','야놀자','구글','애플','마이크로소프트','아마존','메타','테슬라','엔비디아','오픈AI'];
+  for (const company of knownCompanies) {
+    if (t.includes(company.toLowerCase())) { tags.push(company); break; }
+  }
+  const companyPattern = /([가-힣A-Za-z]+(?:전자|그룹|캐피탈|증권|보험|은행|제약|건설|물산|중공업|테크|소프트|랩|컴퍼니|코리아|글로벌))/g;
+  let match;
+  while ((match = companyPattern.exec(text)) !== null) {
+    if (!tags.includes(match[1])) { tags.push(match[1]); break; }
+  }
+  const namePattern = /([가-힣]{2,4})(?:씨|님|선생|과장|대리|부장|차장|팀장|실장|본부장|사장|대표|이사|교수|박사)/g;
+  while ((match = namePattern.exec(text)) !== null) {
+    if (!tags.includes(match[1]) && tags.length < 7) tags.push(match[1]);
+  }
+  return tags.slice(0, 5);
+}
+
+function removeDuplicates(text) {
+  const parts = text.split(/(?<=[.!?。])\s*|\n+/).map(s => s.trim()).filter(Boolean);
+  if (parts.length <= 1) {
+    const words = text.split(/\s+/);
+    const unique = []; const seen = new Set();
+    for (let i = 0; i < words.length; i++) {
+      const chunk = words.slice(i, i + 3).join(' ');
+      if (!seen.has(chunk)) { seen.add(chunk); unique.push(words[i]); }
+    }
+    return unique.join(' ');
+  }
+  const seen = new Set(); const unique = [];
+  for (const part of parts) {
+    const norm = part.replace(/\s+/g, ' ').trim();
+    if (norm && !seen.has(norm)) { seen.add(norm); unique.push(part); }
+  }
+  return unique.join(' ');
 }
 
 function getSummary(text) {
-  const sentences = text.split(/[.!?\n]+/).map(s => s.trim()).filter(Boolean);
-  const s = sentences[0] || text;
-  return s.length > 60 ? s.slice(0, 57) + '...' : s;
+  const sentences = text.split(/(?<=[.!?。])\s*|\n+/).map(s => s.trim()).filter(s => s.length > 5);
+  if (sentences.length === 0) return text.length > 100 ? text.slice(0, 97) + '...' : text;
+  if (sentences.length === 1) return sentences[0].length > 100 ? sentences[0].slice(0, 97) + '...' : sentences[0];
+  const importantKw = ['해야','중요','핵심','결론','정리','결과','필요','목표','계획','결정','문제','해결','요점','우선','급한','꼭'];
+  const scored = sentences.map((s, i) => {
+    let score = 0;
+    if (i === 0) score += 3;
+    if (i === sentences.length - 1) score += 1;
+    for (const kw of importantKw) { if (s.includes(kw)) score += 2; }
+    score += Math.min(s.length / 20, 2);
+    return { s, score, i };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  const topCount = Math.min(3, scored.length);
+  const top = scored.slice(0, topCount).sort((a, b) => a.i - b.i);
+  let summary = top.map(t => t.s).join('. ');
+  if (!summary.endsWith('.') && !summary.endsWith('!') && !summary.endsWith('?')) summary += '.';
+  if (summary.length > 150) summary = summary.slice(0, 147) + '...';
+  return summary;
 }
 
 function saveMemo(text) {
+  text = removeDuplicates(text);
   const now = new Date();
   const cat = classify(text);
   const memo = {
