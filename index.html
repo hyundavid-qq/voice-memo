@@ -167,32 +167,60 @@ function initRecognition() {
   r.continuous = true;
   r.interimResults = true;
   r.maxAlternatives = 1;
-  let segments = [];
-  let currentSessionFinal = '';
+
+  let committedText = '';   // 완료된 이전 세션들의 텍스트
+  let sessionFinal = '';    // 현재 세션의 final 텍스트
+  let lastResultIdx = 0;    // 현재 세션에서 이미 처리한 final result 수
+
   r.onresult = (e) => {
-    currentSessionFinal = '';
     let interim = '';
-    for (let i = 0; i < e.results.length; i++) {
-      if (e.results[i].isFinal) currentSessionFinal += e.results[i][0].transcript;
-      else interim += e.results[i][0].transcript;
+    // resultIndex부터만 처리하여 이미 확정된 결과 재처리 방지
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        // 이 result가 새로 final 된 것인지 확인
+        if (i >= lastResultIdx) {
+          sessionFinal += e.results[i][0].transcript;
+          lastResultIdx = i + 1;
+        }
+      } else {
+        interim += e.results[i][0].transcript;
+      }
     }
-    transcript = segments.join('') + currentSessionFinal;
-    document.getElementById('recStatus').textContent = (transcript + interim).slice(-60) || '듣고 있습니다...';
+    transcript = committedText + sessionFinal;
+    document.getElementById('recStatus').textContent =
+      (transcript + interim).slice(-60) || '듣고 있습니다...';
   };
+
   r.onerror = (e) => {
     if (e.error === 'no-speech') return;
     console.error('Speech error', e.error);
     stopRecording();
   };
+
   r.onend = () => {
     if (isRecording) {
-      if (currentSessionFinal) segments.push(currentSessionFinal);
-      currentSessionFinal = '';
-      try { r.start(); } catch(e) { console.error('Restart failed', e); }
+      // 현재 세션 텍스트를 committed에 병합 (겹침 제거)
+      committedText = mergeOverlap(committedText, sessionFinal);
+      sessionFinal = '';
+      lastResultIdx = 0;
+      try { r.start(); } catch (err) { console.error('Restart failed', err); }
     }
   };
-  r._reset = () => { segments = []; currentSessionFinal = ''; };
+
+  r._reset = () => { committedText = ''; sessionFinal = ''; lastResultIdx = 0; };
   return r;
+}
+
+// 세션 경계에서 브라우저가 오디오를 겹쳐 재인식할 때 중복 제거
+function mergeOverlap(existing, newText) {
+  if (!existing || !newText) return existing + newText;
+  const maxCheck = Math.min(existing.length, newText.length, 80);
+  for (let len = maxCheck; len >= 4; len--) {
+    if (existing.slice(-len) === newText.slice(0, len)) {
+      return existing + newText.slice(len);
+    }
+  }
+  return existing + newText;
 }
 
 function startRecording() {
@@ -263,43 +291,100 @@ function extractTags(text) {
 }
 
 function removeDuplicates(text) {
+  // 1단계: 문장 단위 중복 제거
   const parts = text.split(/(?<=[.!?。])\s*|\n+/).map(s => s.trim()).filter(Boolean);
-  if (parts.length <= 1) {
-    const words = text.split(/\s+/);
-    const unique = []; const seen = new Set();
-    for (let i = 0; i < words.length; i++) {
-      const chunk = words.slice(i, i + 3).join(' ');
-      if (!seen.has(chunk)) { seen.add(chunk); unique.push(words[i]); }
+  if (parts.length > 1) {
+    const seen = new Set();
+    const unique = [];
+    for (const part of parts) {
+      const norm = part.replace(/\s+/g, '');
+      if (norm && !seen.has(norm)) { seen.add(norm); unique.push(part); }
     }
-    return unique.join(' ');
+    text = unique.join(' ');
   }
-  const seen = new Set(); const unique = [];
-  for (const part of parts) {
-    const norm = part.replace(/\s+/g, ' ').trim();
-    if (norm && !seen.has(norm)) { seen.add(norm); unique.push(part); }
+  // 2단계: 구문 반복 패턴 제거 (같은 어절 시퀀스가 연속 반복되는 경우)
+  const words = text.split(/\s+/);
+  if (words.length < 6) return text;
+  const result = [];
+  let i = 0;
+  while (i < words.length) {
+    let foundRepeat = false;
+    // 3~15어절 길이의 반복 패턴 탐색
+    for (let pLen = 3; pLen <= Math.min(15, Math.floor((words.length - i) / 2)); pLen++) {
+      const pattern = words.slice(i, i + pLen).join(' ');
+      const next = words.slice(i + pLen, i + pLen * 2).join(' ');
+      if (pattern === next) {
+        result.push(...words.slice(i, i + pLen));
+        // 반복되는 만큼 건너뛰기
+        let skip = i + pLen;
+        while (skip + pLen <= words.length && words.slice(skip, skip + pLen).join(' ') === pattern) {
+          skip += pLen;
+        }
+        i = skip;
+        foundRepeat = true;
+        break;
+      }
+    }
+    if (!foundRepeat) { result.push(words[i]); i++; }
   }
-  return unique.join(' ');
+  return result.join(' ');
 }
 
 function getSummary(text) {
-  const sentences = text.split(/(?<=[.!?。])\s*|\n+/).map(s => s.trim()).filter(s => s.length > 5);
-  if (sentences.length === 0) return text.length > 100 ? text.slice(0, 97) + '...' : text;
-  if (sentences.length === 1) return sentences[0].length > 100 ? sentences[0].slice(0, 97) + '...' : sentences[0];
-  const importantKw = ['해야','중요','핵심','결론','정리','결과','필요','목표','계획','결정','문제','해결','요점','우선','급한','꼭'];
+  // 한국어 음성 텍스트용 문장 분리 (마침표 + 접속사 기반)
+  let sentences = text.split(/(?<=[.!?。])\s+|\n+/)
+    .map(s => s.trim()).filter(s => s.length > 5);
+  // 음성 텍스트는 마침표 없이 이어지므로, 접속사/어미로 추가 분리
+  if (sentences.length <= 1 && text.length > 40) {
+    sentences = text.split(/\s+(?:그리고|그래서|그런데|하지만|근데|그래가지고|그다음에|또|아 그리고)\s+|(?<=다)\s+(?=[가-힣])/)
+      .map(s => s.trim()).filter(s => s.length > 5);
+  }
+  if (sentences.length === 0) return text.length > 120 ? text.slice(0, 117) + '...' : text;
+  if (sentences.length === 1) return sentences[0].length > 120 ? sentences[0].slice(0, 117) + '...' : sentences[0];
+
+  // TF 기반 단어 중요도 계산 (불용어 제외)
+  const stopwords = new Set(['그리고','그래서','하지만','그런데','이것','저것','그것','있는','없는',
+    '하는','되는','것이','에서','으로','까지','부터','합니다','됩니다','있습니다','없습니다',
+    '했습니다','입니다','그냥','는데','거든','잖아','해서','하고','이고','인데','같은','다른',
+    '모든','어떤','이런','저런','그런','지금','오늘','내일','어제','정말','진짜','아주','좀']);
+  const allWords = text.replace(/[.,!?;:()]/g, ' ').split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
+  const wordFreq = {};
+  allWords.forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });
+
+  // 각 문장의 핵심 점수 계산
+  const actionKw = ['해야','중요','핵심','결론','결과','필요','목표','계획','결정','문제',
+    '해결','꼭','반드시','우선','핵심은','요약하면','정리하면','결국'];
   const scored = sentences.map((s, i) => {
-    let score = 0;
-    if (i === 0) score += 3;
-    if (i === sentences.length - 1) score += 1;
-    for (const kw of importantKw) { if (s.includes(kw)) score += 2; }
-    score += Math.min(s.length / 20, 2);
-    return { s, score, i };
+    const words = s.replace(/[.,!?;:()]/g, ' ').split(/\s+/).filter(w => w.length >= 2 && !stopwords.has(w));
+    // 문장 내 단어들의 TF 합산 (길이 정규화)
+    let tfScore = 0;
+    words.forEach(w => { tfScore += (wordFreq[w] || 0); });
+    if (words.length > 0) tfScore /= Math.sqrt(words.length);
+
+    // 위치 가중치: 첫 문장(주제), 마지막 문장(결론)
+    let posScore = 0;
+    if (i === 0) posScore = 2.5;
+    else if (i === sentences.length - 1) posScore = 1.5;
+
+    // 핵심 키워드 보너스
+    let kwScore = 0;
+    for (const kw of actionKw) { if (s.includes(kw)) kwScore += 3; }
+
+    // 적당한 길이 선호 (너무 짧거나 긴 문장 페널티)
+    const lenScore = words.length >= 3 && words.length <= 20 ? 1 : 0;
+
+    return { s, score: tfScore + posScore + kwScore + lenScore, i };
   });
+
   scored.sort((a, b) => b.score - a.score);
-  const topCount = Math.min(3, scored.length);
-  const top = scored.slice(0, topCount).sort((a, b) => a.i - b.i);
-  let summary = top.map(t => t.s).join('. ');
-  if (!summary.endsWith('.') && !summary.endsWith('!') && !summary.endsWith('?')) summary += '.';
-  if (summary.length > 150) summary = summary.slice(0, 147) + '...';
+
+  // 상위 2~3문장 선택 (원래 순서 유지)
+  const pickCount = sentences.length <= 3 ? Math.min(2, sentences.length) : 3;
+  const top = scored.slice(0, pickCount).sort((a, b) => a.i - b.i);
+
+  let summary = top.map(t => t.s.replace(/\s+/g, ' ').trim()).join('. ');
+  if (!/[.!?。]$/.test(summary)) summary += '.';
+  if (summary.length > 200) summary = summary.slice(0, 197) + '...';
   return summary;
 }
 
